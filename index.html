@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Market Maker Game</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .trade-log { font-family: monospace; font-size: 11px; }
+  .price-chart { display: flex; align-items: flex-end; gap: 1px; height: 80px; }
+  .price-bar { flex: 1; min-width: 3px; background: #3b82f6; border-radius: 1px 1px 0 0; }
+</style>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+<div class="max-w-4xl mx-auto p-4">
+  <h1 class="text-2xl font-bold text-center text-cyan-400 mb-1">Market Maker Game</h1>
+  <p class="text-center text-gray-400 text-sm mb-4">Set bid/ask spreads, manage inventory, avoid informed traders</p>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <!-- Asset Panel -->
+    <div class="bg-gray-800 rounded-xl p-4">
+      <h2 class="font-semibold text-cyan-300 mb-3">Assets</h2>
+      <div id="asset-list" class="space-y-2"></div>
+    </div>
+
+    <!-- Trading Panel -->
+    <div class="bg-gray-800 rounded-xl p-4">
+      <h2 class="font-semibold text-cyan-300 mb-2">Your Quote</h2>
+      <div class="text-sm text-gray-400 mb-1">Selected: <span id="selected-asset" class="text-cyan-300 font-bold">ZORP</span></div>
+      <div class="text-sm mb-3">True value: <span id="true-val" class="text-yellow-400 font-bold">~???</span></div>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="text-gray-300 block mb-1">Bid Price (you buy)</label>
+          <input type="number" id="bid-price" value="98" step="0.5" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-green-400 font-mono">
+        </div>
+        <div>
+          <label class="text-gray-300 block mb-1">Ask Price (you sell)</label>
+          <input type="number" id="ask-price" value="102" step="0.5" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-red-400 font-mono">
+        </div>
+        <div>
+          <label class="text-gray-300 block mb-1">Spread: <span id="spread-display" class="text-amber-400">4.00</span></label>
+        </div>
+        <div>
+          <label class="text-gray-300 block mb-1">Quantity</label>
+          <input type="number" id="qty" value="10" min="1" max="50" step="1" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5">
+        </div>
+        <button id="btn-post" class="w-full bg-cyan-700 hover:bg-cyan-600 px-3 py-2 rounded font-medium">Post Quote</button>
+      </div>
+
+      <!-- Price chart -->
+      <div class="mt-4">
+        <div class="text-xs text-gray-400 mb-1">Price History</div>
+        <div id="price-chart" class="price-chart bg-gray-900 rounded p-1"></div>
+      </div>
+    </div>
+
+    <!-- Portfolio + Log -->
+    <div class="flex flex-col gap-3">
+      <div class="bg-gray-800 rounded-xl p-4">
+        <h2 class="font-semibold text-cyan-300 mb-3">Portfolio</h2>
+        <div class="space-y-1.5 text-sm">
+          <div class="flex justify-between"><span class="text-gray-400">Cash</span><span id="p-cash" class="text-green-400 font-bold">$10,000</span></div>
+          <div class="flex justify-between"><span class="text-gray-400">P&L</span><span id="p-pnl" class="font-bold">$0</span></div>
+          <div class="flex justify-between"><span class="text-gray-400">Trades</span><span id="p-trades" class="text-gray-300">0</span></div>
+          <div class="flex justify-between"><span class="text-gray-400">Win Rate</span><span id="p-winrate" class="text-gray-300">-</span></div>
+        </div>
+        <div id="inv-list" class="mt-3 space-y-1 text-xs"></div>
+      </div>
+
+      <div class="bg-gray-800 rounded-xl p-4 flex-1">
+        <h2 class="font-semibold text-cyan-300 mb-2">Trade Log</h2>
+        <div id="trade-log" class="trade-log space-y-0.5 max-h-48 overflow-y-auto text-gray-300"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ASSETS = [
+  { id: 'ZORP', name: 'Zorp Corp', trueVal: 100, price: 100, vol: 2, trend: 0 },
+  { id: 'FLUX', name: 'Flux Energy', trueVal: 50, price: 50, vol: 3, trend: 0.02 },
+  { id: 'MEME', name: 'MemeToken', trueVal: 25, price: 25, vol: 8, trend: 0 },
+  { id: 'SAFE', name: 'SafeHaven', trueVal: 200, price: 200, vol: 0.5, trend: -0.01 },
+];
+
+const BOT_TYPES = ['noise', 'noise', 'noise', 'informed', 'momentum', 'contrarian'];
+
+let cash = 10000, inventory = {}, trades = 0, wins = 0, priceHistory = {}, selectedAsset = 'ZORP';
+ASSETS.forEach(a => { inventory[a.id] = 0; priceHistory[a.id] = [a.price]; });
+
+let postedBid = 98, postedAsk = 102, postedQty = 10;
+let gameInterval = null;
+
+function renderAssets() {
+  const list = document.getElementById('asset-list');
+  list.innerHTML = '';
+  ASSETS.forEach(a => {
+    const hist = priceHistory[a.id];
+    const change = hist.length > 1 ? ((hist[hist.length-1] - hist[0]) / hist[0] * 100).toFixed(1) : '0.0';
+    const div = document.createElement('div');
+    div.className = `p-2 rounded-lg cursor-pointer border transition-colors ${a.id === selectedAsset ? 'bg-cyan-900 border-cyan-500' : 'bg-gray-700 border-gray-600 hover:border-gray-400'}`;
+    div.innerHTML = `<div class="flex justify-between items-start"><span class="font-bold text-sm">${a.id}</span><span class="${parseFloat(change)>=0?'text-green-400':'text-red-400'} text-xs">${change>=0?'+':''}${change}%</span></div>
+      <div class="text-xs text-gray-400">${a.name}</div>
+      <div class="text-sm font-mono mt-0.5">$${a.price.toFixed(2)}</div>
+      <div class="text-xs text-gray-500">Inv: ${inventory[a.id]}</div>`;
+    div.onclick = () => selectAsset(a.id);
+    list.appendChild(div);
+  });
+}
+
+function selectAsset(id) {
+  selectedAsset = id;
+  const a = ASSETS.find(x => x.id === id);
+  document.getElementById('selected-asset').textContent = id;
+  // Show approximate true value with noise
+  const approxVal = a.trueVal * (0.9 + Math.random() * 0.2);
+  document.getElementById('true-val').textContent = `~$${approxVal.toFixed(0)}`;
+  updatePriceChart();
+  renderAssets();
+}
+
+function updatePriceChart() {
+  const hist = priceHistory[selectedAsset];
+  const chart = document.getElementById('price-chart');
+  chart.innerHTML = '';
+  const recent = hist.slice(-50);
+  const min = Math.min(...recent), max = Math.max(...recent);
+  const range = max - min || 1;
+  recent.forEach((p, i) => {
+    const h = Math.max(2, ((p - min) / range) * 70);
+    const bar = document.createElement('div');
+    bar.className = 'price-bar';
+    bar.style.height = h + 'px';
+    const isRecent = i === recent.length - 1;
+    bar.style.background = isRecent ? '#f59e0b' : '#3b82f6';
+    chart.appendChild(bar);
+  });
+}
+
+function updateSpread() {
+  const bid = parseFloat(document.getElementById('bid-price').value);
+  const ask = parseFloat(document.getElementById('ask-price').value);
+  const spread = ask - bid;
+  document.getElementById('spread-display').textContent = isNaN(spread) ? '-' : spread.toFixed(2);
+  document.getElementById('spread-display').className = spread < 0 ? 'text-red-500' : spread < 2 ? 'text-green-400' : 'text-amber-400';
+}
+
+['bid-price','ask-price'].forEach(id => document.getElementById(id).addEventListener('input', updateSpread));
+
+document.getElementById('btn-post').addEventListener('click', () => {
+  postedBid = parseFloat(document.getElementById('bid-price').value);
+  postedAsk = parseFloat(document.getElementById('ask-price').value);
+  postedQty = parseInt(document.getElementById('qty').value);
+  if (postedBid >= postedAsk) { addLog('ERROR: bid must be < ask', 'text-red-400'); return; }
+  addLog(`Posted: BID $${postedBid} / ASK $${postedAsk} x${postedQty} on ${selectedAsset}`, 'text-cyan-300');
+});
+
+function runTick() {
+  // Update asset prices
+  ASSETS.forEach(a => {
+    a.trend += (Math.random() - 0.5) * 0.005;
+    a.trend = Math.max(-0.1, Math.min(0.1, a.trend));
+    const shock = Math.random() < 0.01 ? (Math.random() - 0.5) * a.vol * 10 : 0;
+    a.trueVal = Math.max(1, a.trueVal * (1 + a.trend * 0.01 + shock * 0.01));
+    a.price = Math.max(0.01, a.price + (Math.random() - 0.5) * a.vol * 0.5 + (a.trueVal - a.price) * 0.02);
+    priceHistory[a.id].push(a.price);
+    if (priceHistory[a.id].length > 200) priceHistory[a.id].shift();
+  });
+
+  // Bots trade against us on selectedAsset
+  const asset = ASSETS.find(x => x.id === selectedAsset);
+  const botType = BOT_TYPES[Math.floor(Math.random() * BOT_TYPES.length)];
+  const qty = Math.ceil(Math.random() * Math.min(postedQty, 20));
+  let traded = false;
+
+  if (botType === 'informed') {
+    // Informed trader knows true value — buys below trueVal, sells above
+    if (postedAsk < asset.trueVal * 0.97 && cash >= postedAsk * qty) {
+      // Bot buys from us (we sell)
+      const cost = postedAsk * qty;
+      cash -= cost;
+      inventory[selectedAsset] = (inventory[selectedAsset] || 0) - qty;
+      trades++; wins++;
+      addLog(`SELL ${qty} ${selectedAsset} @ $${postedAsk} to informed trader`, 'text-green-400');
+      traded = true;
+    } else if (postedBid > asset.trueVal * 1.03) {
+      // Bot sells to us (we buy)
+      cash += postedBid * qty;
+      inventory[selectedAsset] = (inventory[selectedAsset] || 0) + qty;
+      trades++;
+      addLog(`BUY ${qty} ${selectedAsset} @ $${postedBid} from informed trader ⚠`, 'text-red-400');
+      traded = true;
+    }
+  } else if (botType === 'noise') {
+    const buyOrSell = Math.random() < 0.5;
+    if (buyOrSell && Math.random() < 0.3) {
+      // Noise buys at ask
+      cash -= postedAsk * qty; inventory[selectedAsset] -= qty; trades++; wins++;
+      addLog(`SELL ${qty} ${selectedAsset} @ $${postedAsk} to noise trader`, 'text-emerald-400');
+      traded = true;
+    } else if (!buyOrSell && Math.random() < 0.3) {
+      // Noise sells at bid
+      cash += postedBid * qty; inventory[selectedAsset] += qty; trades++;
+      addLog(`BUY ${qty} ${selectedAsset} @ $${postedBid} from noise trader`, 'text-sky-400');
+      traded = true;
+    }
+  } else if (botType === 'momentum' && priceHistory[selectedAsset].length > 5) {
+    const hist = priceHistory[selectedAsset];
+    const momentum = hist[hist.length-1] - hist[hist.length-5];
+    if (momentum > 0 && Math.random() < 0.4) {
+      cash -= postedAsk * qty; inventory[selectedAsset] -= qty; trades++; wins++;
+      addLog(`SELL ${qty} ${selectedAsset} @ $${postedAsk} to momentum bot`, 'text-emerald-400');
+      traded = true;
+    }
+  }
+
+  // P&L calculation (mark-to-market)
+  let pnl = cash - 10000;
+  ASSETS.forEach(a => { pnl += (inventory[a.id] || 0) * a.price; });
+  const pnlEl = document.getElementById('p-pnl');
+  pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+  pnlEl.className = `font-bold ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+  document.getElementById('p-cash').textContent = '$' + cash.toFixed(2);
+  document.getElementById('p-trades').textContent = trades;
+  document.getElementById('p-winrate').textContent = trades > 0 ? (wins/trades*100).toFixed(0)+'%' : '-';
+
+  const invEl = document.getElementById('inv-list');
+  invEl.innerHTML = ASSETS.filter(a => inventory[a.id] !== 0).map(a =>
+    `<div class="flex justify-between"><span class="${inventory[a.id]>0?'text-green-400':'text-red-400'}">${a.id}: ${inventory[a.id]}</span><span class="text-gray-400">$${(inventory[a.id]*a.price).toFixed(0)}</span></div>`
+  ).join('');
+
+  renderAssets();
+  updatePriceChart();
+}
+
+function addLog(msg, cls = 'text-gray-300') {
+  const log = document.getElementById('trade-log');
+  const d = document.createElement('div');
+  d.className = 'trade-log ' + cls;
+  const time = new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  d.textContent = `[${time}] ${msg}`;
+  log.prepend(d);
+  while (log.children.length > 50) log.removeChild(log.lastChild);
+}
+
+selectAsset('ZORP');
+updateSpread();
+gameInterval = setInterval(runTick, 800);
+addLog('Market opened. Post quotes to begin trading.', 'text-cyan-300');
+</script>
+</body>
+</html>
